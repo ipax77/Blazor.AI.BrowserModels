@@ -5,7 +5,7 @@
 Inference runs on the user's device. No API key, hosted model, database, or server-side inference service is required.
 
 > [!NOTE]
-> This is a preview package targeting .NET 11. Browser support also depends on the installed model, hardware, storage, browser policy, and the page being served from localhost or HTTPS. See Chrome's [Prompt API documentation](https://developer.chrome.com/docs/ai/prompt-api) for current requirements.
+> This is a preview package targeting .NET 10 and .NET 11. Browser support also depends on the installed model, hardware, storage, browser policy, and the page being served from localhost or HTTPS. See Chrome's [Prompt API documentation](https://developer.chrome.com/docs/ai/prompt-api) for current requirements.
 
 ## Install
 
@@ -139,7 +139,7 @@ Open the displayed localhost URL in a compatible desktop Chrome installation and
 
 ## Build and test
 
-The repository pins its preview .NET SDK in `global.json`. Node.js 22.12 or newer is needed only when changing the TypeScript sources.
+The repository pins its preview .NET 11 SDK in `global.json`. Install both the .NET 10 and .NET 11 SDKs to build and run the complete unit-test matrix. Node.js 22.12 or newer is needed only when changing the TypeScript sources.
 
 ```powershell
 npm ci
