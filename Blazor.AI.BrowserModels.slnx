@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/Blazor.AI.BrowserModels.Wasm/Blazor.AI.BrowserModels.Wasm.csproj" />
+  <Project Path="tests/Blazor.AI.BrowserModels.Playwright.Tests/Blazor.AI.BrowserModels.Playwright.Tests.csproj" />
+  <Project Path="src/Blazor.AI.BrowserModels/Blazor.AI.BrowserModels.csproj" />
+  <Project Path="tests/Blazor.AI.BrowserModels.Tests/Blazor.AI.BrowserModels.Tests.csproj" />
+  <Project Path="src/Blazor.AI.BrowserModels.Sample/Blazor.AI.BrowserModels.Sample.csproj" />
+</Solution>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Blazor.AI.BrowserModels/Blazor.AI.BrowserModels.csproj" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.20.0" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,8 @@
+:root { font-family: system-ui, sans-serif; color: #172d36; background: #f4f7f7; line-height: 1.55; }
+body { margin: 0; } main { max-width: 820px; margin: 3rem auto; padding: 0 1.25rem; }
+h1 { font-size: clamp(2rem, 5vw, 3rem); margin: .2rem 0; } .eyebrow { color: #276f69; font-weight: 650; }
+nav { margin: 1.5rem 0; } a { color: #176b63; } section { background: white; padding: 1.5rem; border: 1px solid #d8e3e2; border-radius: 12px; }
+label { display: block; margin: .75rem 0; } textarea, select, input { font: inherit; max-width: 100%; }
+textarea { box-sizing: border-box; width: 100%; padding: .65rem; } button { font: inherit; padding: .5rem .85rem; margin: .4rem .4rem .4rem 0; cursor: pointer; }
+button:disabled { cursor: default; } fieldset { border: 1px solid #d8e3e2; } .note { font-size: .9rem; color: #51676e; }
+.reply { white-space: pre-wrap; overflow-wrap: anywhere; } .error { color: #a02222; } .image-previews img { max-width: 140px; max-height: 100px; }

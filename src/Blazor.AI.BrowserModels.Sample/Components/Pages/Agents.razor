@@ -1,0 +1,148 @@
+@page "/agents"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using Microsoft.Agents.AI
+@using Microsoft.Extensions.AI
+@using System.Text.Json
+@using System.Text
+@implements IDisposable
+
+<PageTitle>Browser agent</PageTitle>
+<main>
+    <p><a href="/">Image and browser model sample</a></p>
+    <h1>Browser agent</h1>
+    <p>Microsoft Agent Framework with a model running in Chrome. Text travels through the server connection.</p>
+    <BrowserModelButton SessionMode="BrowserModelSessionMode.Stateless" EnableImages="true" OnReady="ReadyAsync" OnError="Failed" />
+    <BrowserModelAttachments @ref="attachments" Session="browserSession" Disabled="@(busy || pendingImages is not null)">
+    <label for="agent-prompt">Your prompt (English)</label>
+    <textarea id="agent-prompt" rows="4" @bind="prompt" disabled="@busy"></textarea>
+    </BrowserModelAttachments>
+    @if (pendingImages is not null) { <p class="note">Images retained for retry. Generate reuses them; New conversation releases them.</p> }
+    <label><input type="checkbox" @bind="structured" disabled="@busy" /> Return a typed summary (JSON)</label>
+    <button @onclick="GenerateAsync" disabled="@(agent is null || busy)">@(busy ? "Generating…" : "Generate")</button>
+    <button @onclick="Cancel" disabled="@(!busy)">Cancel</button>
+    <button @onclick="NewConversationAsync" disabled="@(agent is null || busy)">New conversation</button>
+    @if (error is not null) { <p role="alert" class="error">@error</p> }
+    <p class="note">Keep this page open and connected while generating. Hidden tabs may pause; closing or reloading loses the browser session. Interrupted replies cannot be resumed.</p>
+    <h2>Reply</h2>
+    <div class="reply" role="status" aria-live="polite">@(reply ?? "Your agent's reply will appear here.")</div>
+    @if (rawJson is not null)
+    {
+        <details><summary>Raw JSON response</summary><pre class="reply">@rawJson</pre></details>
+    }
+    <p class="note">Images stay in this browser; only text and image references cross the server connection. History replays each turn, including earlier images. Image history is limited to 16 images / 64 MiB; New conversation or reload releases it. Text replies stream in bounded batches; typed JSON is validated after completion. Audio and background responses are not supported.</p>
+</main>
+
+@code {
+    private BrowserModelChatClient? client;
+    private BrowserModelSession? browserSession;
+    private BrowserModelAttachments? attachments;
+    private BrowserModelImageReference? pendingImages;
+    private AIAgent? agent;
+    private AgentSession? conversation;
+    private CancellationTokenSource? cancellation;
+    private string prompt = "Write a cheerful story of about 150 words.";
+    private string? reply;
+    private string? rawJson;
+    private string? error;
+    private bool busy;
+    private bool disposed;
+    private bool structured;
+    public sealed class Summary
+    {
+        // Share cached options between schema generation and parsing: both use camelCase.
+        private static readonly JsonSerializerOptions JsonOptions = JsonSerializerOptions.Web;
+        public static readonly ChatResponseFormatJson Format = ChatResponseFormat.ForJsonSchema<Summary>(JsonOptions);
+        public required string Title { get; init; }
+        public required string[] KeyPoints { get; init; }
+
+        public static Summary Parse(string json)
+        {
+            var summary = JsonSerializer.Deserialize<Summary>(json, JsonOptions);
+            if (summary is null || string.IsNullOrWhiteSpace(summary.Title) || summary.KeyPoints is null ||
+                summary.KeyPoints.Any(string.IsNullOrWhiteSpace))
+                throw new JsonException("Expected a title and an array of nonempty key points.");
+            return summary;
+        }
+    }
+
+    private async Task ReadyAsync(BrowserModelSession session)
+    {
+        browserSession = session;
+        client = new(session);
+        agent = client.AsAIAgent(instructions: "Be helpful and concise. Respond in English.");
+        await NewConversationAsync();
+    }
+
+    private void Failed(string message) => error = message;
+    private void Cancel() => cancellation?.Cancel();
+
+    private async Task NewConversationAsync()
+    {
+        if (busy || agent is null) return;
+        if (browserSession is not null) await browserSession.ClearImagesAsync();
+        pendingImages = null;
+        conversation = await agent.CreateSessionAsync();
+        reply = null;
+        rawJson = null;
+        error = null;
+    }
+
+    private async Task GenerateAsync()
+    {
+        if (busy || agent is null || conversation is null) return;
+        if (string.IsNullOrWhiteSpace(prompt)) { error = "Enter a prompt first."; return; }
+        busy = true;
+        reply = null;
+        rawJson = null;
+        error = null;
+        cancellation = new();
+        try
+        {
+            var options = structured ? new ChatClientAgentRunOptions { ChatOptions = new() { ResponseFormat = Summary.Format } } : null;
+            if (pendingImages is null && attachments is not null && browserSession is not null)
+                pendingImages = await browserSession.RetainImagesAsync(attachments);
+            var message = new ChatMessage(ChatRole.User, prompt);
+            if (pendingImages is not null) message.Contents.Add(new BrowserModelImageContent(pendingImages));
+            if (structured)
+            {
+                var response = await agent.RunAsync(message, conversation, options, cancellation.Token);
+                pendingImages = null; // The successful agent run has already committed this input.
+                rawJson = response.Text;
+                var summary = Summary.Parse(rawJson);
+                reply = summary.Title + "\n\n" + string.Join("\n", summary.KeyPoints.Select(point => "• " + point));
+            }
+            else
+            {
+                var text = new StringBuilder();
+                reply = "";
+                var lastRender = System.Diagnostics.Stopwatch.GetTimestamp();
+                await foreach (var update in agent.RunStreamingAsync(message, conversation, options, cancellation.Token))
+                {
+                    text.Append(update.Text);
+                    if (System.Diagnostics.Stopwatch.GetElapsedTime(lastRender).TotalMilliseconds < 100) continue;
+                    reply = text.ToString();
+                    lastRender = System.Diagnostics.Stopwatch.GetTimestamp();
+                    // Intermediate stream batches need explicit rendering before the event completes.
+#pragma warning disable BL0012
+                    if (!disposed) StateHasChanged();
+#pragma warning restore BL0012
+                }
+                reply = text.ToString();
+            }
+            pendingImages = null;
+        }
+        catch (JsonException ex) { error = "Invalid typed summary: " + ex.Message; }
+        catch (OperationCanceledException) { if (!disposed) error = "Generation canceled. Any partial reply is incomplete. You can try again."; }
+        catch (JSDisconnectedException) { error = "The server connection was lost. Reload to reconnect."; }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or NotSupportedException or ArgumentException)
+        { error = ex.Message; }
+        finally { cancellation.Dispose(); cancellation = null; busy = false; }
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        cancellation?.Cancel();
+        client?.Dispose();
+    }
+}

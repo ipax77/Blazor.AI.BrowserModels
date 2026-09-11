@@ -1,0 +1,106 @@
+@namespace Blazor.AI.BrowserModels
+@using Microsoft.AspNetCore.Components
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+
+<div @ref="root" class="image-composer">
+    @ChildContent
+    <fieldset data-image-controls disabled>
+        <legend>Image attachments</legend>
+        <label>Add images <input data-image-picker type="file" accept="image/png,image/jpeg,image/webp" multiple /></label>
+        <p class="note">Choose files, paste images here, or drop them onto the composer.</p>
+        <div data-image-previews class="image-previews"></div>
+    </fieldset>
+    <p data-image-status class="note" role="status" aria-live="polite">Initialize the browser model to attach images.</p>
+    <p data-image-error class="error" role="alert"></p>
+    @if (error is not null) { <p class="error" role="alert">@error</p> }
+</div>
+
+@code {
+    [Parameter] public BrowserModelSession? Session { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    /// <summary>Optional prompt UI within the paste and drop target.</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private ElementReference root;
+    private BrowserModelSession? attachedSession;
+    private IJSObjectReference? controller;
+    private bool disposed;
+    private bool updating;
+    private bool? lastDisabled;
+    private string? error;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (disposed || updating) return;
+        updating = true;
+        var completed = false;
+        try
+        {
+            if (!ReferenceEquals(Session, attachedSession))
+            {
+                await ReleaseAsync();
+                attachedSession = Session;
+                if (attachedSession is not null)
+                {
+                    var created = await attachedSession.AttachImagesAsync(root);
+                    if (disposed)
+                    {
+                        await created.InvokeVoidAsync("dispose");
+                        await created.DisposeAsync();
+                        return;
+                    }
+                    controller = created;
+                    lastDisabled = null;
+                }
+            }
+            if (controller is not null && lastDisabled != Disabled)
+            {
+                var value = Disabled;
+                await controller.InvokeVoidAsync("setDisabled", value);
+                lastDisabled = value;
+            }
+            completed = true;
+        }
+        catch (JSDisconnectedException) { }
+        catch (TaskCanceledException) { }
+        catch (JSException exception)
+        {
+            if (error != exception.Message) { error = exception.Message; StateHasChanged(); }
+        }
+        finally
+        {
+            updating = false;
+            if (completed && !disposed && (!ReferenceEquals(Session, attachedSession) || (controller is not null && lastDisabled != Disabled)))
+                StateHasChanged();
+        }
+    }
+
+    internal IJSObjectReference GetController(BrowserModelSession session)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (!ReferenceEquals(session, attachedSession) || controller is null)
+            throw new InvalidOperationException("The attachments must be initialized with this model session before prompting.");
+        return controller;
+    }
+
+    private async ValueTask ReleaseAsync()
+    {
+        var previous = controller;
+        controller = null;
+        if (previous is null) return;
+        try { await previous.InvokeVoidAsync("dispose"); }
+        catch (JSDisconnectedException) { }
+        catch (TaskCanceledException) { }
+        finally { await previous.DisposeAsync(); }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (disposed) return;
+        disposed = true;
+        try { await ReleaseAsync(); }
+        catch (JSDisconnectedException) { }
+        catch (TaskCanceledException) { }
+    }
+}

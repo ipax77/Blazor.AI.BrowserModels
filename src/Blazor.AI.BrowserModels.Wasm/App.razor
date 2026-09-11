@@ -1,0 +1,28 @@
+@inject NavigationManager Navigation
+
+<PageTitle>Browser model chat · Blazor.AI.BrowserModels</PageTitle>
+<main>
+    <p class="eyebrow">Blazor.AI.BrowserModels · WebAssembly</p>
+    <h1>Chat in your browser</h1>
+    <p>BrowserModelChatClient runs through Chrome's local model. Prompts, replies and images stay in this page. Reloading clears the conversation.</p>
+    <nav><a href="./">Chat demo</a> · <a href="?view=scenarios">Adapter scenarios</a> · <a href="?view=agent">Agent Framework</a></nav>
+    @if (mounted)
+    {
+        <ChatDemo Scenarios="@scenarios" UseAgent="@useAgent" />
+    }
+    @if (scenarios)
+    {
+        <button data-testid="mount" @onclick="() => mounted = !mounted">@(mounted ? "Remove chat component" : "Mount chat component")</button>
+    }
+</main>
+@code {
+    private bool mounted = true;
+    private bool scenarios;
+    private bool useAgent;
+    protected override void OnInitialized()
+    {
+        var query = new Uri(Navigation.Uri).Query;
+        scenarios = query == "?view=scenarios";
+        useAgent = query == "?view=agent";
+    }
+}

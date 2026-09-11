@@ -1,0 +1,106 @@
+@namespace Blazor.AI.BrowserModels
+@using Microsoft.AspNetCore.Components
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@if (showSettings)
+{
+    <div @ref="samplingPanel" class="sampling-settings">
+        <fieldset disabled>
+            <legend>Optional sampling settings</legend>
+            <label>Top K <input name="topK" type="number" min="1" step="1" placeholder="Browser default" /></label>
+            <label>Temperature <input name="temperature" type="number" min="0" step="any" placeholder="Browser default" /></label>
+        </fieldset>
+        <p class="note" data-sampling-status role="status" aria-live="polite">Checking numeric sampling support…</p>
+    </div>
+}
+@if (showSystemPrompt)
+{
+    <label>System prompt (optional, English)
+        <textarea @ref="systemPromptInput" rows="3" disabled></textarea>
+    </label>
+    <p class="note">Applies throughout the conversation. Leave blank for no system prompt. Reload to change it after initialization.</p>
+}
+<button @ref="button" type="button" disabled>Initialize browser model</button>
+<p role="status" aria-live="polite">@message</p>
+
+@code {
+    [Parameter] public EventCallback<BrowserModelSession> OnReady { get; set; }
+    [Parameter] public EventCallback<string> OnError { get; set; }
+    /// <summary>Initial Top K override. Null uses the browser default.</summary>
+    [Parameter] public int? TopK { get; set; }
+    /// <summary>Initial Temperature override. Null uses the browser default.</summary>
+    [Parameter] public double? Temperature { get; set; }
+    /// <summary>Shows browser-local sampling controls. Captured on initial render.</summary>
+    [Parameter] public bool ShowSamplingSettings { get; set; }
+    /// <summary>Requests image input with text-only fallback. Captured on initial render.</summary>
+    [Parameter] public bool EnableImages { get; set; }
+    /// <summary>Initial system instructions. Blank means no system prompt. Captured on initial render.</summary>
+    [Parameter] public string? SystemPrompt { get; set; }
+    /// <summary>Shows a browser-local system prompt editor that locks after initialization. Captured on initial render.</summary>
+    [Parameter] public bool ShowSystemPrompt { get; set; }
+    /// <summary>Captured on initial render. Stateless sessions accept full message histories.</summary>
+    [Parameter] public BrowserModelSessionMode SessionMode { get; set; }
+
+    private readonly BrowserModelSession session = new();
+    private ElementReference button;
+    private ElementReference samplingPanel;
+    private ElementReference systemPromptInput;
+    private bool showSystemPrompt;
+    private string? initialSystemPrompt;
+    private bool showSettings;
+    private bool enableImages;
+    private int? initialTopK;
+    private double? initialTemperature;
+    private DotNetObjectReference<BrowserModelButton>? callback;
+    private string message = "Checking browser model support…";
+    private bool disposed;
+    private BrowserModelSessionMode initialMode;
+
+    protected override void OnInitialized()
+    {
+        initialMode = SessionMode;
+        if (!Enum.IsDefined(initialMode)) throw new ArgumentOutOfRangeException(nameof(SessionMode));
+        if (initialMode == BrowserModelSessionMode.Stateless && (ShowSystemPrompt || !string.IsNullOrWhiteSpace(SystemPrompt)))
+            throw new InvalidOperationException("Stateless sessions take system instructions from agent messages. Remove SystemPrompt and ShowSystemPrompt.");
+        showSettings = ShowSamplingSettings;
+        enableImages = EnableImages;
+        showSystemPrompt = ShowSystemPrompt;
+        initialSystemPrompt = SystemPrompt;
+        initialTopK = TopK;
+        initialTemperature = Temperature;
+        if (initialTemperature is { } value && !double.IsFinite(value))
+            throw new ArgumentOutOfRangeException(nameof(Temperature), "Temperature must be finite.");
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        callback = DotNetObjectReference.Create(this);
+        try { await session.AttachAsync(JS, button, callback, initialTopK, initialTemperature, showSettings ? samplingPanel : null, enableImages, initialSystemPrompt, showSystemPrompt ? systemPromptInput : null, initialMode); }
+        catch (JSDisconnectedException) { /* The browser may have left during initialization. */ }
+        catch (TaskCanceledException) { /* The circuit may have closed. */ }
+        catch (JSException)
+        {
+            await ReportAsync("failed", "Could not load the browser integration. Reload the page and try again.");
+        }
+    }
+
+    [JSInvokable]
+    public Task ReportAsync(string state, string detail) => InvokeAsync(async () =>
+    {
+        if (disposed) return;
+        message = detail;
+        if (state == "ready") await OnReady.InvokeAsync(session);
+        if (state == "failed" || state == "unavailable") await OnError.InvokeAsync(detail);
+        StateHasChanged();
+    });
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        await session.DisposeAsync();
+        callback?.Dispose();
+    }
+}

@@ -1,0 +1,181 @@
+@using System.Text
+@using System.Text.Json
+@using Microsoft.Agents.AI
+@implements IDisposable
+
+<section data-testid="chat" data-ready="@(client is not null)" data-busy="@busy">
+    <h2>@(UseAgent ? "Agent Framework conversation" : "BrowserModelChatClient")</h2>
+    <BrowserModelButton SessionMode="BrowserModelSessionMode.Stateless" EnableImages="true" OnReady="ReadyAsync" OnError="Failed" />
+    <BrowserModelAttachments @ref="attachments" Session="session" Disabled="@(busy || pendingImages is not null)">
+        <label for="prompt">Your prompt (English)</label>
+        <textarea id="prompt" rows="4" @bind="prompt" disabled="@busy"></textarea>
+    </BrowserModelAttachments>
+    @if (pendingImages is not null) { <p data-testid="pending-images">Images retained for retry. New conversation releases them.</p> }
+    <label>Response mode
+        <select data-testid="mode" @bind="mode" disabled="@busy">
+            <option value="text">Completed text</option>
+            <option value="stream">Streaming text</option>
+            <option value="json">Typed JSON summary</option>
+            @if (Scenarios) { <option value="json-any">Any JSON value</option> }
+        </select>
+    </label>
+    <button data-testid="generate" @onclick="GenerateAsync" disabled="@(client is null || busy)">Generate</button>
+    <button @onclick="Cancel" disabled="@(!busy)">Cancel</button>
+    <button @onclick="ResetAsync" disabled="@(client is null || busy)">New conversation</button>
+    <p data-testid="state" role="status">@state</p>
+    @if (error is not null) { <p data-testid="error" role="alert" class="error">@error</p> }
+    <h3>Reply</h3>
+    <div data-testid="reply" class="reply" aria-live="polite">@reply</div>
+    @if (rawJson is not null) { <details><summary>Raw JSON response</summary><pre data-testid="raw-json">@rawJson</pre></details> }
+    <p class="note">Keep this page open during generation. History is replayed each turn and uses model context. Images are limited to 16 files / 64 MiB per session.</p>
+    @if (Scenarios)
+    {
+        <fieldset><legend>Adapter lifecycle scenarios</legend>
+            <label><input type="checkbox" @bind="stopEarly" disabled="@busy" /> Stop after first stream batch</label>
+            <button data-testid="concurrent" disabled="@(!busy)" @onclick="ConcurrentAsync">Attempt concurrent request</button>
+            <button data-testid="replace-client" disabled="@(client is null || busy)" @onclick="ReplaceClientAsync">Dispose and replace adapter</button>
+            <button data-testid="expired-image" disabled="@(expiredImages is null || busy)" @onclick="ExpiredImageAsync">Try released image reference</button>
+            <p data-testid="scenario-result">@scenarioResult</p>
+            <output data-testid="stream-metrics">@batches batches; maximum @maxBatch characters</output>
+            <output data-testid="history-count">@history.Count</output>
+        </fieldset>
+    }
+</section>
+
+@code {
+    [Parameter] public bool Scenarios { get; set; }
+    [Parameter] public bool UseAgent { get; set; }
+    private const string Instructions = "Be helpful and concise. Respond in English.";
+    private BrowserModelSession? session;
+    private BrowserModelChatClient? client;
+    private BrowserModelAttachments? attachments;
+    private BrowserModelImageReference? pendingImages, expiredImages;
+    private AIAgent? agent;
+    private AgentSession? conversation;
+    private readonly List<ChatMessage> history = [];
+    private CancellationTokenSource? cancellation;
+    private string prompt = "Summarize why local inference can be useful in two short sentences.";
+    private string mode = "text", reply = "", state = "Initialize the model to begin.";
+    private string? error, rawJson, scenarioResult;
+    private bool busy, disposed, stopEarly;
+    private int batches, maxBatch;
+    private static readonly ChatResponseFormatJson SummaryFormat = ChatResponseFormat.ForJsonSchema<Summary>(JsonSerializerOptions.Web);
+    public sealed class Summary
+    {
+        public required string Title { get; init; }
+        public required string[] KeyPoints { get; init; }
+    }
+
+    private async Task ReadyAsync(BrowserModelSession value)
+    {
+        session = value;
+        client = new(value);
+        if (UseAgent) agent = client.AsAIAgent(instructions: Instructions);
+        await ResetAsync();
+    }
+    private void Failed(string value) { error = value; state = "Model unavailable or initialization failed."; }
+    private void Cancel() => cancellation?.Cancel();
+    private async Task ResetAsync()
+    {
+        if (session is null || busy) return;
+        expiredImages = pendingImages ?? history.SelectMany(m => m.Contents).OfType<BrowserModelImageContent>().FirstOrDefault()?.Images;
+        await session.ClearImagesAsync();
+        pendingImages = null;
+        history.Clear();
+        history.Add(new(ChatRole.System, "Keep replies brief."));
+        if (agent is not null) conversation = await agent.CreateSessionAsync();
+        reply = ""; rawJson = error = null; state = "Ready";
+    }
+    private async Task ReplaceClientAsync()
+    {
+        client!.Dispose();
+        try { await client.GetResponseAsync([new(ChatRole.User, "Disposed adapter")]); }
+        catch (ObjectDisposedException) { scenarioResult = "Disposed adapter rejected the request; browser session preserved."; }
+        client = new(session!);
+    }
+    private async Task ConcurrentAsync()
+    {
+        try { await client!.GetResponseAsync([new(ChatRole.User, "Concurrent request")]); scenarioResult = "Unexpected success"; }
+        catch (InvalidOperationException ex) { scenarioResult = ex.Message; }
+    }
+    private async Task ExpiredImageAsync()
+    {
+        var message = new ChatMessage(ChatRole.User, "Released image");
+        message.Contents.Add(new BrowserModelImageContent(expiredImages!));
+        try { await client!.GetResponseAsync([message]); scenarioResult = "Unexpected success"; }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException) { scenarioResult = ex.Message; }
+    }
+    private async Task GenerateAsync()
+    {
+        if (client is null || session is null || busy) return;
+        if (string.IsNullOrWhiteSpace(prompt)) { error = "Enter a prompt first."; return; }
+        busy = true; error = rawJson = null; reply = ""; state = "Generating";
+        batches = maxBatch = 0;
+        using var lifetime = new CancellationTokenSource();
+        cancellation = lifetime;
+        var addedPending = false;
+        try
+        {
+            if (pendingImages is null && attachments is not null) pendingImages = await session.RetainImagesAsync(attachments);
+            var message = new ChatMessage(ChatRole.User, prompt);
+            if (pendingImages is not null) message.Contents.Add(new BrowserModelImageContent(pendingImages));
+            var options = new ChatOptions { Instructions = UseAgent ? null : Instructions,
+                ResponseFormat = mode == "json" ? SummaryFormat : mode == "json-any" ? ChatResponseFormat.Json : null };
+            // Append temporarily and roll back on failure; avoid copying the full transcript each turn.
+            if (!UseAgent) { history.Add(message); addedPending = true; }
+            var agentOptions = new ChatClientAgentRunOptions { ChatOptions = options };
+            if (mode == "stream")
+            {
+                var text = new StringBuilder();
+                var lastRender = System.Diagnostics.Stopwatch.GetTimestamp();
+                var updates = UseAgent ? AgentTextAsync(message, agentOptions, lifetime.Token) : ClientTextAsync(options, lifetime.Token);
+                await foreach (var batch in updates)
+                {
+                    batches++; maxBatch = Math.Max(maxBatch, batch.Length); text.Append(batch);
+                    if (stopEarly) { reply = text.ToString(); state = "Stopped early"; return; }
+                    if (System.Diagnostics.Stopwatch.GetElapsedTime(lastRender).TotalMilliseconds < 100) continue;
+                    reply = text.ToString(); lastRender = System.Diagnostics.Stopwatch.GetTimestamp();
+#pragma warning disable BL0012
+                    if (!disposed) StateHasChanged();
+#pragma warning restore BL0012
+                }
+                reply = text.ToString();
+            }
+            else
+            {
+                reply = UseAgent
+                    ? (await agent!.RunAsync(message, conversation!, agentOptions, lifetime.Token)).Text
+                    : (await client.GetResponseAsync(history, options, lifetime.Token)).Text;
+            }
+            // A completed model response is committed even if the demo's typed rendering later fails.
+            if (!UseAgent) { history.Add(new(ChatRole.Assistant, reply)); addedPending = false; }
+            pendingImages = null;
+            if (mode == "json")
+            {
+                rawJson = reply;
+                var summary = JsonSerializer.Deserialize<Summary>(reply, JsonSerializerOptions.Web);
+                if (summary is null || string.IsNullOrWhiteSpace(summary.Title) || summary.KeyPoints is null || summary.KeyPoints.Any(string.IsNullOrWhiteSpace))
+                    throw new JsonException("Expected a title and nonempty key points.");
+                reply = summary.Title + "\n\n" + string.Join("\n", summary.KeyPoints.Select(p => "• " + p));
+            }
+            state = "Completed";
+        }
+        catch (OperationCanceledException) { error = "Generation canceled. Partial replies are incomplete."; state = "Canceled"; }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or NotSupportedException or ArgumentException or JsonException)
+        { error = ex.Message; state = "Failed"; }
+        finally
+        {
+            if (addedPending) history.RemoveAt(history.Count - 1);
+            cancellation = null; busy = false;
+        }
+    }
+    private async IAsyncEnumerable<string> ClientTextAsync(ChatOptions options, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+    {
+        await foreach (var update in client!.GetStreamingResponseAsync(history, options, token)) yield return update.Text;
+    }
+    private async IAsyncEnumerable<string> AgentTextAsync(ChatMessage message, ChatClientAgentRunOptions options, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+    {
+        await foreach (var update in agent!.RunStreamingAsync(message, conversation!, options, token)) yield return update.Text;
+    }
+    public void Dispose() { disposed = true; cancellation?.Cancel(); client?.Dispose(); }
+}

@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmitOnError": true,
+    "rootDir": "src/Blazor.AI.BrowserModels/TypeScript",
+    "outDir": "src/Blazor.AI.BrowserModels/wwwroot"
+  },
+  "include": ["src/Blazor.AI.BrowserModels/TypeScript/**/*.ts"]
+}

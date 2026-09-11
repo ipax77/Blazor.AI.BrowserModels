@@ -1,0 +1,67 @@
+@page "/"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<PageTitle>Blazor.AI.BrowserModels · Hello World</PageTitle>
+<main>
+    <p class="eyebrow">BLAZOR.AI / CHROME BUILT-IN AI</p>
+    <h1>Hello World</h1>
+    <p><a href="/agents">Try the Microsoft Agent Framework text sample</a></p>
+    <p>A small Blazor Server sample talking to an LLM running locally in your browser.</p>
+    <section aria-label="Browser model">
+        <BrowserModelButton OnReady="ModelReady" OnError="ModelError" ShowSamplingSettings="true" ShowSystemPrompt="true" EnableImages="true" />
+        @if (modelInfo is not null)
+        {
+            <p class="note">Model: @(modelInfo.Name ?? "Browser-managed model") · Download size: @(modelInfo.SizeBytes is { } bytes ? $"{bytes:N0} bytes" : "Not exposed") · Context: @(modelInfo.ContextUsageTokens?.ToString("N0") ?? "Unknown") / @(modelInfo.ContextWindowTokens?.ToString("N0") ?? "Unknown") tokens</p>
+            <p class="note">Effective Top K: @(modelInfo.TopK?.ToString() ?? "Not exposed") · Temperature: @(modelInfo.Temperature?.ToString("G6") ?? "Not exposed")</p>
+        }
+        <p class="note">For broker properties, performance class, manifest details and broker capabilities, paste <code>chrome://on-device-internals/</code> into Chrome’s address bar. This page cannot read Chrome’s internal diagnostics.</p>
+        <BrowserModelAttachments @ref="attachments" Session="session" Disabled="busy">
+            <label for="prompt">Your prompt (English)</label>
+            <textarea id="prompt" rows="4" @bind="prompt" disabled="@busy"></textarea>
+        </BrowserModelAttachments>
+        <button type="button" @onclick="GenerateAsync" disabled="@(session is null || busy)">@(busy ? "Generating…" : "Generate reply")</button>
+        @if (error is not null) { <p role="alert" class="error">@error</p> }
+        <h2>Reply</h2>
+        <div class="reply" role="status" aria-live="polite">@(reply ?? "Your model’s reply will appear here.")</div>
+    </section>
+    <p class="note">Inference runs in Chrome. Text prompts and replies travel through this Blazor Server app’s connection; attached images stay in your browser. The first use may download a model; this app needs its server connection.</p>
+</main>
+
+@code {
+    private BrowserModelSession? session;
+    private BrowserModelAttachments? attachments;
+    private BrowserModelInfo? modelInfo;
+    private string prompt = "Say hello to the world in one short sentence.";
+    private string? reply;
+    private string? error;
+    private bool busy;
+
+    private async Task ModelReady(BrowserModelSession ready)
+    {
+        session = ready;
+        error = null;
+        try { modelInfo = await ready.GetInfoAsync(); }
+        catch (JSException exception) { error = exception.Message; }
+        catch (TaskCanceledException) { error = "Could not read model information. Reload the page and try again."; }
+    }
+    private void ModelError(string message) => error = message;
+
+    private async Task GenerateAsync()
+    {
+        if (busy || session is null) return;
+        if (string.IsNullOrWhiteSpace(prompt)) { error = "Enter a prompt first."; return; }
+        busy = true;
+        error = null;
+        reply = null;
+        try
+        {
+            reply = attachments is null ? await session.PromptAsync(prompt) : await session.PromptAsync(prompt, attachments);
+            modelInfo = await session.GetInfoAsync();
+        }
+        catch (JSDisconnectedException) { error = "The server connection was lost. Reload the page to reconnect."; }
+        catch (JSException exception) { error = exception.Message; }
+        catch (InvalidOperationException exception) { error = exception.Message; }
+        catch (TaskCanceledException) { error = "The request timed out. Reload the page and try again."; }
+        finally { busy = false; }
+    }
+}
